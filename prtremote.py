@@ -424,8 +424,14 @@ class JoinStateProbe:
         itself only lives in LSASS memory -- but a loaded hive on an
         Entra-registered box is the signal that a harvest can succeed.
 
-        Returns loaded: list[(sid, name|None)].
+        Returns loaded: list[(sid, name|None, wpj: bool)].
+          wpj=True  -- per-user Entra workplace registration found in this hive
+                       (HKU\\<SID>\\...\\WorkplaceJoin\\JoinInfo has subkeys)
+          wpj=False -- no per-user registration; still a candidate if device-joined
+                       or if the SID is an Entra cloud SID (S-1-12-1-)
         """
+        WPJ_KEY = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\WorkplaceJoin\JoinInfo"
+
         dce = self._open_winreg()
         try:
             hklm = rrp.hOpenLocalMachine(dce)["phKey"]
@@ -445,11 +451,19 @@ class JoinStateProbe:
 
             # Currently-loaded user hives => logged-on interactive users.
             hku = rrp.hOpenUsers(dce)["phKey"]
-            loaded = [
-                (s, names.get(s))
-                for s in self._enum_from_handle(dce, hku)
+            sids = [
+                s for s in self._enum_from_handle(dce, hku)
                 if looks_like_user_sid(s) and not s.endswith("_Classes")
             ]
+
+            # Per-user workplace registration check: does this hive have a
+            # WorkplaceJoin\JoinInfo key with subkeys (cert thumbprints)?
+            # Readable via the already-open HKU handle; absent key returns [].
+            loaded = []
+            for sid in sids:
+                wpj = bool(self._enum_subkeys(dce, hku, sid + "\\" + WPJ_KEY))
+                loaded.append((sid, names.get(sid), wpj))
+
             return loaded
         finally:
             dce.disconnect()
@@ -485,27 +499,42 @@ def run_check(options, domain, username, password, remoteName):
 
     print('')
     kv('Target', remoteName)
-    kv('Entra registered', 'YES' if azure_ad else 'NO', ok=azure_ad)
+    kv('Device Entra-joined', 'YES' if azure_ad else 'NO', ok=azure_ad)
     if azure_ad:
         kv('Device key(s)', ', '.join(thumbs) or '<none>', indent=1)
         kv('Tenant ID(s)', ', '.join(tenants) or '<none>', indent=1)
     kv('Live sessions', len(loaded), ok=bool(loaded))
-    for sid, name in loaded:
-        kv(name or '<unresolved>', sid, indent=1)
+    for sid, name, wpj in loaded:
+        if sid.startswith('S-1-12-1-'):
+            tag = ' (Entra cloud SID)'
+        elif wpj:
+            tag = ' (workplace-registered)'
+        else:
+            tag = ''
+        kv((name or '<unresolved>') + tag, sid, indent=1)
 
-    if azure_ad and loaded:
-        candidates = [name or sid for sid, name in loaded]
+    # Harvest eligibility: device-joined, Entra cloud SID, or per-user workplace
+    # registration (WorkplaceJoin\JoinInfo present in the user's hive).
+    harvest_candidates = [
+        (sid, name) for sid, name, wpj in loaded
+        if azure_ad or sid.startswith('S-1-12-1-') or wpj
+    ]
+    if harvest_candidates:
+        candidates = [name or sid for sid, name in harvest_candidates]
         print('')
+        if not azure_ad:
+            say('Per-user workplace registration found. No device key, but a PRT is present.')
         say('Harvest with: prtremote.py dump %s -run-user %s'
             % (options.target, candidates[0]))
         if len(candidates) > 1:
             say('Other candidates: %s' % ', '.join(candidates[1:]))
-    elif not azure_ad:
+    elif azure_ad:
         print('')
-        say('Not Entra-registered -- no PRT to harvest on this host.', ok=False)
+        say('No live interactive session. An InteractiveToken task cannot run.',
+            ok=False)
     else:
         print('')
-        say('No live interactive session -- an InteractiveToken task cannot run.',
+        say('No live session and no device Entra join. Nothing to harvest here.',
             ok=False)
 
     return 0
